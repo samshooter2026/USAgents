@@ -81,21 +81,37 @@ AXWZ26=55.0, AXWZ27=65.5, AXWZ28=74.0, AXWZ29=81.5, AXWZ30=89.5, AXWZ31=97.0, AX
 
 ---
 
-## Calibration verification (today's evidence)
+## Calibration verification (cumulative log)
 
-The pricer was validated against two real prints:
+The pricer is validated against real prints. Each row records the observed flow vs the pricer at trade-time conditions.
 
 **1. SPX Dec31 Combo (7153f, LIVE) 121.52/121.78 — Apr 22, 2026**
 - "7153f" = ES front-month at trade time = 7153 (gives implied SPX spot ~7118)
 - Back-solved strike: K = 8575 (clean SPX 25-pt grid)
-- Pricer at K=8575: combo mid ≈ 121.4 vs market 121.65 → **gap of 0.25 pts**, well inside the 0.26 bid-ask. ✓
+- Pricer at K=8575: combo mid ≈ 121.4 vs market 121.65 → **gap of 0.25 pts**, well inside the 0.26 bid-ask ✓
 
-**2. SPX Dec26 combo trades 250mm 101.9275% 7338f — May 6, 2026**
-- "101.9275%" = forward as a percentage of SPX spot (F/S, the standard equity-finance convention)
-- Pricer F/S = 101.9537% → **gap = 2.6 bps in F/S = ~0.4 bps in implied borrow**
-- Implied borrow on the print = 54.6 bps vs AXW's 55.0 bps. ✓
+**2. SPX Dec26 combo — 550mm at 101.9275% / 7338f — May 6, 2026**
+- 250mm @ 15:06 + 300mm @ 15:56, both at the identical print
+- "101.9275%" = forward as a percentage of SPX spot (F/S, standard equity-finance convention)
+- Pricer F/S at trade-time conditions = **101.9503%** → gap of **2.28 bps in F/S = 3.6 bps in implied borrow**
+- Implied DEC26 borrow on the print = **51.4 bps** vs AXWZ26's 55.0 bps
+- 550mm of flow at the same level is a strong signal, not noise. **Real DEC26 borrow ≈ 51 bps today** — AXW is sitting ~4 bps rich for the front year.
+- Within "<5 bps = calibrated" rule of thumb, but worth noting.
 
-**Conclusion:** AXW = bps directly is the correct unit. Pricer is calibrated end-to-end.
+**3. SPX Dec30 combo — 100mm at 117.21% / 7329f — May 6, 2026**
+- Pricer F/S = 116.9694% → gap of **24 bps in F/S = 3.8 bps in implied borrow**
+- Implied DEC30 borrow on the print = **93.3 bps** vs AXWZ30's 89.5 bps
+- DEC30 is year-end → small Q4-squeeze premium expected. 4 bps fits.
+
+**Aggregate read across the curve today:**
+| Expiry | AXW says | Real flow says | Gap |
+|---|---|---|---|
+| DEC26 | 55.0 bps | 51.4 bps | −3.6 bps (cheap to AXW) |
+| DEC30 | 89.5 bps | 93.3 bps | +3.8 bps (rich to AXW, year-end) |
+
+**Calibration verdict:** AXW = bps direct unit is confirmed by 650mm of flow today. Front-end may be a touch rich, year-end a touch cheap — both sides within ±5 bps of model. Pricer is in calibration.
+
+**Earlier note correction:** an initial back-of-envelope on the first 250mm print said "0.4 bps gap" — that was an arithmetic error. Correct figure is 3.6 bps. Flagging here so we don't repeat.
 
 ---
 
@@ -155,6 +171,7 @@ Backs out implied borrow from a street combo print. RICH/CHEAP tile shows delta 
 Generates a full run across all expiries in both quote formats:
 - Width slider (10bp D2D, 15bp client)
 - Strike-mode radio: ATM forward (round-100) or ES level (round-25)
+- **Override ES level** checkbox + ES input — reprices the whole run against any ES level (e.g. matching a broker print at "7338f"). Header shows `ES X (LIVE Y)` when overridden.
 - Output: live table + two copy-paste blocks (% of spot, points)
 
 Sample output:
@@ -189,6 +206,25 @@ SPX DEC31 combo  122.9117% / 123.0347%  (7351f)
 4. Read the **Delta** in bps:
    - **|Δ| < 5 bps** → pricer is right, AXW is calibrated
    - **|Δ| ≥ 10 bps** → investigate (stale Bloomberg, weird AXW tick, or genuine market dislocation)
+
+**For %-of-spot prints (e.g. "101.9275% / 7338f"):**
+The fastest way is the **Run** tab with ES override:
+1. Tick **Override ES level**, type the broker's ES (e.g. 7338)
+2. Compare your run line to the print
+3. Gap in F/S × T = implied borrow gap. Or use the script formula:
+   ```python
+   import math
+   gap_bps_borrow = math.log(trade_FoS / pricer_FoS) / T * 10000
+   ```
+
+## When to manually override AXW
+
+AXW gives you a baseline borrow each day. Override the green Excel cell (type a number, the formula gets replaced) when:
+- 3+ prints in a row at the same expiry come in 5+ bps off AXW in the same direction
+- Year-end / quarter-end where AXW lags the squeeze (Q4 DEC26/DEC30 typically rich 3-6 bps)
+- A specific event (dividend recapture, special borrow demand) that AXW can't see yet
+
+Don't override on a single print — flow-of-the-day noise is real. The 550mm DEC26 print today at 3.6 bps off was *not* worth overriding (one cluster, within tolerance). If the same level holds tomorrow, then nudge.
 
 ---
 

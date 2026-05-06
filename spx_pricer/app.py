@@ -451,7 +451,7 @@ def render_run(snap):
     defs = _load_defaults()
     expiry_codes = list(snap.expiries.keys()) if snap else []
 
-    c1, c2, c3 = st.columns([1, 1, 2])
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
     with c1:
         default_width = defs.get("width", {}).get("dealer_to_dealer", 10)
         width_bps = st.slider(
@@ -466,26 +466,51 @@ def render_run(snap):
             help="Choose what strike to use for the points-format quote.",
         )
     with c3:
+        live_es = float(snap.es_future) if snap else 0.0
+        use_es_override = st.checkbox(
+            "Override ES level",
+            value=False,
+            key="run_use_es_override",
+            help="Tick to reprice the whole run against a specific ES level "
+                 "(e.g. matching a broker print at 7329f).",
+        )
+        es_override = st.number_input(
+            "ES futures level",
+            value=live_es,
+            step=0.25,
+            format="%.2f",
+            key="run_es_override",
+            disabled=not use_es_override,
+        )
+    with c4:
         st.caption(
             "Generates your run across every expiry. Two formats: "
             "**% of spot** (101.9275% style) and **points** (121.52/121.78 style). "
-            "Copy the code blocks straight into your chat."
+            "Tick **Override ES level** to reprice against a broker's marked ES."
         )
 
     if not snap:
         st.info("Waiting for Bloomberg connection…")
         return
 
+    es_used = float(es_override) if use_es_override else float(snap.es_future)
+    es_arg = float(es_override) if use_es_override else None
+    spot_used = snap.spot + (es_used - snap.es_future)
+
     now_str = datetime.now().strftime("%H:%M:%S")
     rows = []
+    header_es = (
+        f"ES {es_used:,.2f}"
+        + (f" (LIVE {snap.es_future:,.2f})" if use_es_override else "")
+    )
     text_pct = [
         f"SPX Combo Run — {now_str} NY",
-        f"ES {snap.es_future:,.2f}  SPX {snap.spot:,.2f}  basis {snap.es_basis:+.2f}",
+        f"{header_es}  SPX {spot_used:,.2f}  basis {snap.es_basis:+.2f}",
         "",
     ]
     text_pts = [
         f"SPX Combo Run (points) — {now_str} NY",
-        f"ES {snap.es_future:,.2f}  SPX {snap.spot:,.2f}  basis {snap.es_basis:+.2f}",
+        f"{header_es}  SPX {spot_used:,.2f}  basis {snap.es_basis:+.2f}",
         "",
     ]
 
@@ -493,10 +518,10 @@ def render_run(snap):
 
     for code in expiry_codes:
         try:
-            res = build_ladder(snap, code, float(width_bps))
-            F, S, T, r, b, q, DF = res["F"], snap.spot, res["T"], res["r"], res["b"], res["q"], res["DF"]
+            res = build_ladder(snap, code, float(width_bps), es_override=es_arg)
+            F, S, T, r, b, q, DF = res["F"], res["spot_eff"], res["T"], res["r"], res["b"], res["q"], res["DF"]
 
-            # % of spot format
+            # % of spot format (against the effective spot — moves when ES override changes)
             FoverS = F / S
             FoS_bid = FoverS * (1 - half_spread)
             FoS_ask = FoverS * (1 + half_spread)
@@ -505,7 +530,7 @@ def render_run(snap):
             if strike_mode.startswith("ATM"):
                 K = round(F / 100) * 100
             else:
-                K = round(snap.es_future / 25) * 25
+                K = round(es_used / 25) * 25
 
             mid = m.combo_mid(F, K, r, T)
             eps = m.edge_per_side(width_bps, F, r, T)
@@ -526,11 +551,11 @@ def render_run(snap):
 
             text_pct.append(
                 f"SPX {code} combo  {FoS_bid*100:.4f}% / {FoS_ask*100:.4f}%  "
-                f"({snap.es_future:,.0f}f)"
+                f"({es_used:,.0f}f)"
             )
             text_pts.append(
                 f"SPX {code} combo K={K:,.0f}  {bid_pts:+.2f} / {ask_pts:+.2f}  "
-                f"({snap.es_future:,.0f}f)"
+                f"({es_used:,.0f}f)"
             )
         except Exception as exc:
             rows.append({"Expiry": code, "F": f"ERR: {exc}"})
