@@ -1,0 +1,18 @@
+# Dec 2030 combo ladder — spx_combo_revcon_handoff.pdf §5.2
+
+spot: 7109.0
+r: 0.0336            # 5Y SOFR swap 3.36%
+borrow: 0.0018       # 18 bps
+div_yield: 0.013     # 1.30%
+T: 4.66
+
+# Strike ladder from PDF Table §5.2
+ladder:
+  - {strike: 7700, bid: 158.85, mid: 163.91, ask: 168.97}
+  - {strike: 7800, bid:  73.35, mid:  78.41, ask:  83.47}
+  - {strike: 7900, bid: -12.15, mid:  -7.09, ask:  -2.03}
+  - {strike: 8000, bid: -97.64, mid: -92.58, ask: -87.52}
+  - {strike: 8100, bid: -183.14, mid: -178.08, ask: -173.02}
+
+# Implied forward from table (mid step ≈ 85.49 = DF×100 per 100pts):
+f_implied_approx: 7892.0

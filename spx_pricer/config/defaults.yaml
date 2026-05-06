@@ -1,0 +1,30 @@
+# SPX Pricer — default parameters (all overridable via CLI or Streamlit)
+
+# Bid/ask width in bps of forward
+width:
+  dealer_to_dealer: 10      # default for broker-to-broker
+  end_client: 15            # wider for buy-side
+
+# Revcon verdict threshold (annualised bps)
+verdict_threshold_bps: 1    # |bps_ann| < 1 → FLAT
+
+# Ladder
+ladder_spacing: 100         # strike spacing in index points
+ladder_strikes_above: 3
+ladder_strikes_below: 3
+
+# Stale data thresholds (seconds since snapshot)
+stale_amber_secs: 30
+stale_red_secs: 120
+
+# Auto-refresh interval for Streamlit (seconds)
+refresh_interval_secs: 5
+
+# Year-end guardrail: extra bps to add to default width in Q4 (Oct–Dec)
+yearend_extra_bps: 5
+
+# SOFR tenor mapping rule: "nearest_above" or "nearest"
+sofr_tenor_rule: nearest_above
+
+# Day count convention
+day_count: ACT365

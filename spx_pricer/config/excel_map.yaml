@@ -1,0 +1,53 @@
+workbook: C:\Users\sshooter\US Pricers\Combos_RevCon_Pricer.xlsx
+platform: windows
+spot:
+  sheet: BBG Data
+  cell: B3
+sofr_curve:
+  sheet: BBG Data
+  range: B9:B17
+  tenors_years:
+  - 0.0027
+  - 0.083
+  - 0.25
+  - 0.5
+  - 1.0
+  - 2.0
+  - 3.0
+  - 5.0
+  - 10.0
+div_strip:
+  sheet: BBG Data
+  range: B32:B37
+  expiry_labels: &id001
+  - DEC26
+  - DEC27
+  - DEC28
+  - DEC29
+  - DEC30
+  - DEC31
+  _note: 'Cells formula-driven: =ASDZxx/SPX*100  (% ann).  Python uses _to_decimal().'
+borrow_curve:
+  sheet: BBG Data
+  range: B52:B57
+  expiry_labels: *id001
+  _note: 'Cells formula-driven: =AXWZxx (bps, confirmed).  Python uses _bps_to_decimal().'
+es_future:
+  sheet: BBG Data
+  cell: B4
+es_basis:
+  sheet: BBG Data
+  cell: B5
+expiries:
+- code: DEC26
+  date: '2026-12-18'
+- code: DEC27
+  date: '2027-12-19'
+- code: DEC28
+  date: '2028-12-15'
+- code: DEC29
+  date: '2029-12-21'
+- code: DEC30
+  date: '2030-12-20'
+- code: DEC31
+  date: '2031-12-19'

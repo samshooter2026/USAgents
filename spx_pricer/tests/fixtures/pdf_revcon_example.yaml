@@ -1,0 +1,27 @@
+# Revcon worked example — spx_combo_revcon_handoff.pdf §6
+# This example is self-consistent and precisely specified.
+#
+# Counterparty shows: Dec26 7,200 combo at 20 mid, ref ES 7,160 + basis $40, 100 lots
+# Calc:
+#   F_combo = 7,200 + 20 × exp(0.0363 × 0.65) = 7,220.48
+#   F_hedge = 7,160 + 40 = 7,200.00
+#   Edge = 7,200 - 7,220.48 = −20.48 pts  (REV is unfavourable)
+#   P&L $ = −20.48 × $100 × 100 = −$204,800
+
+inputs:
+  K: 7200.0
+  combo: 20.0
+  r: 0.0363          # 3.63% SOFR (more precise than "~3.60%" stated elsewhere in PDF)
+  T: 0.65
+  es_future: 7160.0
+  basis: 40.0
+  side: REV
+  lots: 100
+  spot: 7109.0
+
+expected:
+  f_combo: 7220.48
+  f_hedge: 7200.00
+  edge_pts: -20.48
+  pnl_dollars: -204800
+  verdict: PASS

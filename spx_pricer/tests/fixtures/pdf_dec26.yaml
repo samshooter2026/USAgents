@@ -1,0 +1,26 @@
+# Dec 2026 combo ladder — spx_combo_revcon_handoff.pdf §5.1
+# NOTE: The PDF states F≈7,216 and r≈3.60% but the ladder table values imply
+# F≈7,221 and r≈3.65% (backed out from mid steps of 97.65 = DF per 100pts of strike).
+# Use the table values as ground truth; the stated inputs are rounded.
+# Tolerance: ±$0.50 per combo price.
+
+spot: 7109.0
+r_stated: 0.036        # "~3.60%" per PDF text
+r_precise: 0.0363      # backed out from revcon example in §6
+borrow: 0.0012         # 12 bps
+div_yield: 0.0125      # 1.25%
+T: 0.65
+
+# Strike ladder from PDF Table §5.1
+ladder:
+  - {strike: 7000, bid: 213.20, mid: 216.06, ask: 218.92}
+  - {strike: 7100, bid: 115.55, mid: 118.41, ask: 121.27}
+  - {strike: 7200, bid:  17.90, mid:  20.76, ask:  23.62}
+  - {strike: 7300, bid: -79.74, mid: -76.88, ask: -74.02}
+  - {strike: 7400, bid: -177.39, mid: -174.53, ask: -171.67}
+
+# The implied forward and DF from the table:
+# Mid step between adjacent strikes = 97.65 → DF = 0.9765
+# F backed out from K=7200 mid: F = 7200 + 20.76/0.9765 ≈ 7221
+f_implied_from_table: 7221.26
+df_from_table: 0.9765
