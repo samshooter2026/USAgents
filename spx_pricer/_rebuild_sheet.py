@@ -260,6 +260,29 @@ sh.range(f"A{R}").font.italic = True
 sh.range(f"A{R}").font.size = 9
 sh.range(f"A{R}").color = (0xF0, 0xF4, 0xFF)
 
+# -----------------------------------------------------------------------
+# Cell protection: lock BDP formula cells, leave green override cells editable
+# -----------------------------------------------------------------------
+
+# Step 1: unlock every cell on the sheet (Excel default is Locked=True but
+# protection isn't enforced yet — we want a clean baseline)
+sh.range("A:D").api.Locked = False
+
+# Step 2: re-lock the cells that must never be typed over
+formula_cells = (
+    [f"B{SPX_ROW}", f"B{ES_ROW}", f"B{BASIS_ROW}"]                   # spot, ES, basis
+    + [f"B{SOFR_START + i}" for i in range(len(SOFR_ROWS))]           # SOFR curve
+    + [f"B{ASD_START + i}"  for i in range(len(ASD_YEARS))]           # raw ASD strip
+    + [f"B{AXW_START + i}"  for i in range(len(AXW_YEARS))]           # raw AXW strip
+)
+for cell_addr in formula_cells:
+    sh.range(cell_addr).api.Locked = True
+
+# Step 3: protect the sheet (no password — power users can unprotect via Excel ribbon)
+# AllowFiltering=True so the sheet remains usable; everything else restricted.
+sh.api.Protect(Password="", Contents=True, AllowFiltering=True)
+print(f"  {len(formula_cells)} formula cells locked. Green override cells remain editable.")
+
 wb.save()
 print("Sheet written OK.")
 

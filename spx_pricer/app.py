@@ -9,6 +9,9 @@ import logging
 import time
 from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+_NY = ZoneInfo("America/New_York")
 
 import streamlit as st
 
@@ -35,6 +38,16 @@ st.markdown(
     table { font-family: monospace; font-size: 0.9rem; }
     .stDataFrame { font-family: monospace; }
     div[data-testid="stVerticalBlock"] { gap: 0.3rem; }
+    @keyframes flash-blue {
+        0%   { background: #add8e6; color: #000; border-radius: 3px; }
+        100% { background: transparent; color: inherit; }
+    }
+    @keyframes flash-pink {
+        0%   { background: #ffb6c1; color: #000; border-radius: 3px; }
+        100% { background: transparent; color: inherit; }
+    }
+    .num-up   { animation: flash-blue 1.8s ease-out 1; }
+    .num-down { animation: flash-pink 1.8s ease-out 1; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -97,21 +110,53 @@ def _is_q4() -> bool:
     return date.today().month in (10, 11, 12)
 
 
+def _fix_bloomberg_bdp() -> str:
+    """Clear and re-enter SPX + ES BDP formulas to force a fresh Bloomberg evaluation.
+    Returns a status message."""
+    import xlwings as xw
+    import yaml
+    cfg = yaml.safe_load(open(CONFIG_PATH))
+    wb  = xw.Book(cfg["workbook"])
+    app = wb.app
+    sh  = wb.sheets["BBG Data"]
+
+    spot_cell = cfg["spot"]["cell"]
+    es_cell   = cfg["es_future"]["cell"]
+
+    # Clear + re-enter forces Bloomberg to issue a new data request
+    for cell, formula in [
+        (spot_cell, '=BDP("SPX Index","PX_LAST")'),
+        (es_cell,   '=BDP("ES1 Index","PX_LAST")'),
+    ]:
+        sh.range(cell).clear_contents()
+        sh.range(cell).formula = formula
+
+    app.calculate()
+    time.sleep(3)
+    app.calculate()
+
+    spx = sh.range(spot_cell).value
+    es  = sh.range(es_cell).value
+    st.cache_data.clear()
+    return f"BDP restored. SPX={spx:,.2f}  ES={es:,.2f}"
+
+
 # ---------------------------------------------------------------------------
 # Sticky top bar
 # ---------------------------------------------------------------------------
 
 def render_top_bar(snap, err: str | None, tick: int):
     defs = _load_defaults()
-    col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
+    col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 1, 1])
     with col1:
         if snap:
             age = (datetime.now() - snap.timestamp).total_seconds()
             color = _snap_age_color(snap)
+            ny_ts = snap.timestamp.astimezone(_NY)
             st.markdown(
                 f"**Snapshot** &nbsp; "
                 f"<span style='color:{color};font-family:monospace'>"
-                f"{snap.timestamp:%H:%M:%S} ({age:.0f}s ago)</span>",
+                f"{ny_ts:%H:%M:%S} NY ({age:.0f}s ago)</span>",
                 unsafe_allow_html=True,
             )
         else:
@@ -119,8 +164,10 @@ def render_top_bar(snap, err: str | None, tick: int):
                         unsafe_allow_html=True)
     with col2:
         if snap:
+            frozen = st.session_state.get("_spx_frozen", False)
+            color  = "orange" if frozen else "inherit"
             st.markdown(
-                f"**SPX** &nbsp; <span style='font-family:monospace;font-size:1.1rem'>"
+                f"**SPX** &nbsp; <span style='font-family:monospace;font-size:1.1rem;color:{color}'>"
                 f"{snap.spot:,.2f}</span>",
                 unsafe_allow_html=True,
             )
@@ -133,9 +180,18 @@ def render_top_bar(snap, err: str | None, tick: int):
                 unsafe_allow_html=True,
             )
     with col4:
-        if st.button("⟳ Refresh"):
+        if st.button("Refresh"):
             st.cache_data.clear()
             st.rerun()
+    with col5:
+        if st.button("Fix BDP", help="Restores SPX + ES Bloomberg formulas if they've been overwritten or frozen"):
+            with st.spinner("Restoring BDP formulas..."):
+                try:
+                    msg = _fix_bloomberg_bdp()
+                    st.success(msg)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Fix failed: {exc}")
 
     if err:
         st.error(err)
@@ -497,8 +553,9 @@ def render_run(snap):
     es_arg = float(es_override) if use_es_override else None
     spot_used = snap.spot + (es_used - snap.es_future)
 
-    now_str = datetime.now().strftime("%H:%M:%S")
+    now_str = datetime.now(_NY).strftime("%H:%M:%S")
     rows = []
+    pct_floats = []  # (code, bid_pct, ask_pct) for flash detection
     header_es = (
         f"ES {es_used:,.2f}"
         + (f" (LIVE {snap.es_future:,.2f})" if use_es_override else "")
@@ -548,6 +605,7 @@ def render_run(snap):
                 "Pts Ask":  f"{ask_pts:+.2f}",
                 "Borrow":   f"{b*10000:.0f}bp",
             })
+            pct_floats.append((code, FoS_bid * 100, FoS_ask * 100))
 
             text_pct.append(
                 f"SPX {code} combo  {FoS_bid*100:.4f}% / {FoS_ask*100:.4f}%  "
@@ -562,10 +620,53 @@ def render_run(snap):
 
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
+    # Flash detection: compare current pct values to previous render
+    _prev = st.session_state.get("_run_prev_pct", {})
+    _curr = {code: (bid, ask) for code, bid, ask in pct_floats}
+
+    def _num_class(code: str, side: str, val: float) -> str:
+        prev_bid, prev_ask = _prev.get(code, (val, val))
+        prev_val = prev_bid if side == "bid" else prev_ask
+        if val > prev_val + 1e-6:
+            return "num-up"
+        if val < prev_val - 1e-6:
+            return "num-down"
+        return ""
+
+    # Build styled % of spot HTML block
+    hdr1 = text_pct[0]
+    hdr2 = text_pct[1]
+    pct_html_lines = []
+    for code, bid_pct, ask_pct in pct_floats:
+        bid_cls = _num_class(code, "bid", bid_pct)
+        ask_cls = _num_class(code, "ask", ask_pct)
+        bid_str = f"{bid_pct:.4f}%"
+        ask_str = f"{ask_pct:.4f}%"
+        pct_html_lines.append(
+            f"SPX {code} combo &nbsp; "
+            f"<span class='{bid_cls}' style='font-size:1.25rem;font-weight:600;'>{bid_str}</span>"
+            f" / "
+            f"<span class='{ask_cls}' style='font-size:1.25rem;font-weight:600;'>{ask_str}</span>"
+            f" &nbsp;<span style='color:#888;'>({es_used:,.0f}f)</span>"
+        )
+
+    pct_html = (
+        f"<div style='font-family:monospace;font-size:1rem;padding:1rem 1.2rem;"
+        f"background:#0e1117;color:#fafafa;border-radius:6px;line-height:2.4;'>"
+        f"<div style='font-weight:bold;margin-bottom:0.1rem;'>{hdr1}</div>"
+        f"<div style='color:#aaa;font-size:0.85rem;margin-bottom:0.6rem;'>{hdr2}</div>"
+        + "<br>".join(pct_html_lines)
+        + "</div>"
+    )
+
+    st.session_state["_run_prev_pct"] = _curr
+
     cc1, cc2 = st.columns(2)
     with cc1:
-        st.markdown("**Copy — % of spot format**")
-        st.code("\n".join(text_pct), language="text")
+        st.markdown("**% of spot**")
+        st.markdown(pct_html, unsafe_allow_html=True)
+        with st.expander("📋 Copy text"):
+            st.code("\n".join(text_pct), language="text")
     with cc2:
         st.markdown("**Copy — points format**")
         st.code("\n".join(text_pts), language="text")
@@ -630,29 +731,57 @@ def main():
         tick = int(time.time() // 5)
 
     snap, err = _read_snap(tick)
+
+    # Value-staleness detection: warn if SPX hasn't moved across reads
+    if snap:
+        prev_spx        = st.session_state.get("_prev_spx")
+        frozen_since    = st.session_state.get("_spx_frozen_since")
+        now_local       = datetime.now()
+
+        if prev_spx is not None and abs(snap.spot - prev_spx) < 0.001:
+            if frozen_since is None:
+                st.session_state["_spx_frozen_since"] = now_local
+            frozen_secs = (now_local - (frozen_since or now_local)).total_seconds()
+            st.session_state["_spx_frozen"] = frozen_secs > 60
+        else:
+            st.session_state["_spx_frozen_since"] = None
+            st.session_state["_spx_frozen"] = False
+
+        st.session_state["_prev_spx"] = snap.spot
+    else:
+        st.session_state["_spx_frozen"] = False
+
     data_ok = render_top_bar(snap, err, tick)
+
+    if st.session_state.get("_spx_frozen"):
+        frozen_secs = (datetime.now() - st.session_state["_spx_frozen_since"]).total_seconds()
+        st.warning(
+            f"SPX has been frozen at {snap.spot:,.2f} for {frozen_secs:.0f}s — "
+            "Bloomberg RTD may have stalled. "
+            "Press **Ctrl+Alt+F9** in Excel, or click **Fix BDP** above."
+        )
 
     st.divider()
 
-    tab1, tab2, tab3, tab4 = st.tabs(["Ladder", "Revcon", "Reverse Borrow", "Run"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Run", "Ladder", "Revcon", "Reverse Borrow"])
 
     with tab1:
+        if snap:
+            render_run(snap)
+
+    with tab2:
         if data_ok and snap:
             render_ladder(snap)
         elif not data_ok:
             st.error("Stale data — refresh Bloomberg.")
 
-    with tab2:
+    with tab3:
         if snap:
             render_revcon(snap)
 
-    with tab3:
-        if snap:
-            render_reverse(snap)
-
     with tab4:
         if snap:
-            render_run(snap)
+            render_reverse(snap)
 
 
 if __name__ == "__main__":
