@@ -194,6 +194,26 @@ def reverse_borrow(
     }
 
 
+def implied_borrow_from_fs(fs_ratio: float, r: float, T: float, div_yield: float) -> float:
+    """
+    Implied borrow (decimal) from a forward/spot ratio quote.
+
+    F/S = (1 − qT) × exp((r+b)T)
+    => b = ln( (F/S) / (1 − qT) ) / T − r
+
+    fs_ratio  : F divided by S (e.g. 1.019275 for "101.9275%")
+    r         : SOFR matched to expiry tenor (decimal)
+    T         : year-fraction to expiry (ACT/365)
+    div_yield : annual dividend yield (decimal)
+
+    No spot or strike needed — the ratio is dimensionless, so this works for
+    "% of spot" street prints where the absolute spot at trade time isn't given.
+    """
+    if T <= 0 or fs_ratio <= 0:
+        return 0.0
+    return math.log(fs_ratio / (1 - div_yield * T)) / T - r
+
+
 # ---------------------------------------------------------------------------
 # Sensitivities (PDF §4.4, linear approximations)
 # ---------------------------------------------------------------------------

@@ -496,6 +496,298 @@ def render_reverse(snap):
 
 
 # ---------------------------------------------------------------------------
+# Tab 5 — AXW Calibration Agent
+# ---------------------------------------------------------------------------
+
+def render_agent_deployment(snap):
+    """AXW calibration agent — log every street print, flag AXW drift."""
+    from pricer import calibration as cal
+    from pricer.reverse import calc_reverse
+    from dataclasses import replace
+    import pandas as pd
+
+    st.markdown("### AXW Calibration Agent")
+    st.caption(
+        f"Logs every street combo print, computes implied borrow, and flags when AXW "
+        f"drifts from real flow.  "
+        f"Alert rule: ≥{cal.DRIFT_MIN_PRINTS} consecutive prints same-side and "
+        f"mean |Δ| > {cal.DRIFT_TOLERANCE_BPS}bp vs current AXW."
+    )
+
+    if not snap:
+        st.info("Waiting for Bloomberg connection…")
+        return
+
+    expiry_codes = list(snap.expiries.keys())
+    axw_now_bps  = {code: snap.borrow[code] * 10000 for code in snap.borrow}
+
+    # ── Paste a street print (primary input) ────────────────────────────────
+    st.markdown("#### 📋 Paste street print")
+    paste_default = (
+        ""
+        if "cal_paste_text" not in st.session_state
+        else st.session_state["cal_paste_text"]
+    )
+    with st.form("axw_paste_form", clear_on_submit=True):
+        text = st.text_area(
+            "Paste a one-line print",
+            value=paste_default,
+            placeholder="20:38:10 SPX Dec26 combo trades 650mm ~101.9275% makes 1.2b",
+            height=70,
+            key="cal_paste_text_input",
+            help="Free-form. Picks up expiry, %-of-spot or pts-bid/ask, "
+                 "size, ES level, trade time. ES level is optional for % quotes.",
+        )
+        paste_source = st.text_input(
+            "Source / counterparty (optional)",
+            placeholder="JPM / GS / chat / etc.",
+            key="cal_paste_source",
+        )
+        paste_submit = st.form_submit_button("Parse and log →")
+
+    if paste_submit and text.strip():
+        try:
+            parsed = cal.parse_any(text)
+        except ValueError as exc:
+            st.error(f"Couldn't parse: {exc}")
+        else:
+            try:
+                # ── AXW direct trade (one or many legs) ────────────────────
+                if parsed["kind"] == "axw_direct":
+                    logged = []
+                    for leg in parsed["legs"]:
+                        code = leg["expiry"]
+                        if code not in snap.expiries:
+                            st.warning(f"Skipping unknown expiry {code}.")
+                            continue
+                        axw_at_log = axw_now_bps.get(code, 0.0)
+                        cal.log_axw_direct(
+                            expiry=code,
+                            borrow_bps=leg["borrow_bps"],
+                            axw_borrow_bps_at_log=axw_at_log,
+                            contracts=parsed.get("size"),
+                            source=(paste_source or "AXW direct"),
+                        )
+                        delta = leg["borrow_bps"] - axw_at_log
+                        logged.append(f"{code} @ {leg['borrow_bps']:.2f}bp (Δ {delta:+.2f}bp)")
+                    if logged:
+                        size_str = (
+                            f" · {parsed['size']} contracts"
+                            if parsed.get("size") else ""
+                        )
+                        st.success("AXW direct logged: " + " · ".join(logged) + size_str)
+
+                # ── Combo print, % of spot ─────────────────────────────────
+                elif parsed.get("format") == "pct":
+                    if parsed["expiry"] not in snap.expiries:
+                        st.error(
+                            f"Parsed expiry '{parsed['expiry']}' not in snapshot. "
+                            f"Known: {list(snap.expiries.keys())}"
+                        )
+                    else:
+                        res = cal.implied_borrow_from_pct_print(
+                            parsed["fs_pct"], parsed["expiry"], snap,
+                        )
+                        es_used = parsed.get("es_level") or float(snap.es_future)
+                        spx_at_trade = snap.spot + (es_used - snap.es_future)
+                        cal.log_print(
+                            expiry=parsed["expiry"],
+                            strike=0.0,
+                            combo_mid=parsed["fs_pct"],
+                            es_at_trade=es_used,
+                            spx_at_trade=spx_at_trade,
+                            notional_mm=parsed.get("size_mm"),
+                            source=paste_source or None,
+                            implied_borrow_bps=res["borrow_bps"],
+                            axw_borrow_bps=res["axw_bps"],
+                        )
+                        st.success(
+                            f"Logged: {parsed['expiry']} @ {parsed['fs_pct']:.4f}% "
+                            f"({parsed.get('size_mm', 0):.0f}mm)  "
+                            f"→ implied {res['borrow_bps']:.1f}bp vs AXW {res['axw_bps']:.1f}bp "
+                            f"({res['delta_bps']:+.1f}bp)"
+                        )
+
+                # ── Combo print, points format ─────────────────────────────
+                else:
+                    st.warning(
+                        "Points-format quote detected, but parser doesn't know the strike. "
+                        "Use the manual form below to enter strike + combo mid."
+                    )
+            except Exception as exc:
+                st.error(f"Error computing implied borrow: {exc}")
+
+    # ── Manual form (fallback / points-format / specific strike) ────────────
+    with st.expander("📝 Manual entry (for points-format prints or to override)"):
+        with st.form("axw_log_form", clear_on_submit=True):
+            r1c1, r1c2, r1c3 = st.columns(3)
+            with r1c1:
+                expiry = st.selectbox("Expiry", expiry_codes, key="cal_expiry")
+                strike = st.number_input(
+                    "Strike", value=float(round(snap.es_future / 25) * 25),
+                    step=25.0, format="%.0f",
+                )
+            with r1c2:
+                combo_mid = st.number_input(
+                    "Combo mid (points)", value=0.0, step=0.5, format="%.2f",
+                    help="The street's combo mid in index points (not %).",
+                )
+                es_at_trade = st.number_input(
+                    "ES at trade time", value=float(snap.es_future),
+                    step=0.25, format="%.2f",
+                    help="Use the ES level the print was struck against (e.g. '7338f').",
+                )
+            with r1c3:
+                notional_mm = st.number_input(
+                    "Notional (mm)", value=0, step=10, min_value=0,
+                )
+                source = st.text_input(
+                    "Source / counterparty", placeholder="JPM / GS / chat / etc.",
+                    key="cal_manual_source",
+                )
+
+            submitted = st.form_submit_button("Log print →")
+
+        if submitted:
+            if combo_mid == 0.0:
+                st.error("Combo mid is required.")
+            else:
+                try:
+                    spot_at_trade = snap.spot + (es_at_trade - snap.es_future)
+                    snap_at_trade = replace(snap, spot=spot_at_trade, es_future=es_at_trade)
+
+                    res = calc_reverse(snap_at_trade, expiry, strike, combo_mid)
+                    cal.log_print(
+                        expiry=expiry,
+                        strike=strike,
+                        combo_mid=combo_mid,
+                        es_at_trade=es_at_trade,
+                        spx_at_trade=spot_at_trade,
+                        notional_mm=notional_mm or None,
+                        source=source or None,
+                        implied_borrow_bps=res["borrow_bps"],
+                        axw_borrow_bps=res["b_model_bps"],
+                    )
+                    st.success(
+                        f"Logged: {expiry} K={strike:.0f} combo={combo_mid:+.2f} "
+                        f"→ implied {res['borrow_bps']:.1f}bp vs AXW {res['b_model_bps']:.1f}bp "
+                        f"({res['delta_bps']:+.1f}bp · {res['signal']})"
+                    )
+                except Exception as exc:
+                    st.error(f"Error: {exc}")
+
+    # ── Drift dashboard ─────────────────────────────────────────────────────
+    df = cal.read_log()
+    drift = cal.detect_drift(df, axw_now_bps)
+
+    st.markdown("#### Drift status (vs current AXW)")
+    if df.empty:
+        st.info("No prints logged yet. Use the form above to start building the calibration history.")
+    else:
+        rows = []
+        any_alert = False
+        for code in expiry_codes:
+            d = drift.get(code)
+            if d is None:
+                rows.append({
+                    "Expiry":        code,
+                    "AXW now":       f"{axw_now_bps[code]:.1f}bp",
+                    "Recent prints": 0,
+                    "Mean Δ":        "—",
+                    "Status":        "— no prints —",
+                    "Recommend":     "—",
+                })
+                continue
+            n, mean_d, alert = d["n_prints"], d["mean_delta_bps"], d["alert"]
+            if alert:
+                status = f"🔴 {alert}"
+                any_alert = True
+            elif abs(mean_d) > cal.DRIFT_TOLERANCE_BPS:
+                status = f"🟡 mean {mean_d:+.1f}bp ({n} prints)"
+            else:
+                status = f"🟢 within {cal.DRIFT_TOLERANCE_BPS}bp ({n} prints)"
+            rows.append({
+                "Expiry":        code,
+                "AXW now":       f"{axw_now_bps[code]:.1f}bp",
+                "Recent prints": n,
+                "Mean Δ":        f"{mean_d:+.1f}bp",
+                "Status":        status,
+                "Recommend":     f"{d['rec_borrow_bps']:.1f}bp" if alert else "—",
+            })
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+        if any_alert:
+            st.warning(
+                "One or more expiries have AXW drift exceeding tolerance. "
+                "Consider overriding the green Excel borrow cell to the **Recommend** value, "
+                "or flag the expiry on your run."
+            )
+
+    # ── Trader-style analysis ──────────────────────────────────────────────
+    if not df.empty:
+        st.markdown("#### 🧠 Analysis")
+
+        market_line = cal.market_summary(df, axw_now_bps, expiry_codes)
+        st.markdown(f"_{market_line}_")
+
+        narratives = cal.narrate_drift(df, axw_now_bps, expiry_codes)
+        if narratives:
+            for code in expiry_codes:
+                if code not in narratives:
+                    continue
+                d = drift.get(code, {})
+                # Match the same colour band as the dashboard
+                if d.get("alert"):
+                    icon = "🔴"
+                elif abs(d.get("mean_delta_bps", 0.0)) > cal.DRIFT_TOLERANCE_BPS:
+                    icon = "🟡"
+                else:
+                    icon = "🟢"
+                st.markdown(f"{icon} **{code}** — {narratives[code]}")
+
+    # ── Recent prints log ──────────────────────────────────────────────────
+    if not df.empty:
+        st.markdown("#### Recent prints")
+        f1, f2, f3 = st.columns([2, 1, 1])
+        with f1:
+            sel_expiries = st.multiselect(
+                "Filter by expiry", expiry_codes, default=expiry_codes,
+                key="cal_filter_exp",
+            )
+        with f2:
+            window_choice = st.selectbox(
+                "Window", [1, 7, 30, 90, 365], index=2,
+                format_func=lambda d: f"{d}d", key="cal_window",
+            )
+        with f3:
+            st.metric("Total logged", len(df))
+
+        view = cal.read_log(since_days=window_choice)
+        view = view[view["expiry"].isin(sel_expiries)].head(100).copy()
+        view["axw_now_bps"]     = view["expiry"].map(axw_now_bps)
+        view["delta_today_bps"] = view["implied_borrow_bps"] - view["axw_now_bps"]
+
+        display = view[[
+            "timestamp", "expiry", "strike", "combo_mid", "es_at_trade",
+            "notional_mm", "implied_borrow_bps", "axw_borrow_bps",
+            "axw_now_bps", "delta_today_bps", "source",
+        ]].rename(columns={
+            "timestamp":          "Time",
+            "expiry":             "Exp",
+            "strike":             "K",
+            "combo_mid":          "Combo",
+            "es_at_trade":        "ES@trade",
+            "notional_mm":        "mm",
+            "implied_borrow_bps": "Impl bp",
+            "axw_borrow_bps":     "AXW@trade",
+            "axw_now_bps":        "AXW now",
+            "delta_today_bps":    "Δ today",
+            "source":             "Source",
+        })
+        st.dataframe(display, hide_index=True, width="stretch")
+
+
+# ---------------------------------------------------------------------------
 # Tab 4 — Quote Run (generate your own runs in broker format)
 # ---------------------------------------------------------------------------
 
@@ -509,10 +801,10 @@ def render_run(snap):
 
     c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
     with c1:
-        default_width = defs.get("width", {}).get("dealer_to_dealer", 10)
+        default_width = defs.get("width", {}).get("dealer_to_dealer", 25)
         width_bps = st.slider(
-            "Width (bps of forward)", 5, 25, int(default_width), 1, key="run_width",
-            help="Total bid-ask in bps of the forward. 10 = D2D, 15 = client.",
+            "Default width (bps of forward)", 5, 100, int(default_width), 1, key="run_width",
+            help="Default for all expiries. Each expiry can be overridden individually below.",
         )
     with c2:
         strike_mode = st.radio(
@@ -539,10 +831,21 @@ def render_run(snap):
             disabled=not use_es_override,
         )
     with c4:
+        per_expiry_defaults: dict[str, int] = defs.get("per_expiry_widths", {}) or {}
+        bcol1, bcol2 = st.columns(2)
+        with bcol1:
+            if st.button("Set all = default", help="Set every per-expiry slider to the default width above"):
+                for code in expiry_codes:
+                    st.session_state[f"run_width_{code}"] = int(width_bps)
+                st.rerun()
+        with bcol2:
+            if st.button("Reset to per-expiry", help="Reset each slider to its YAML-configured default"):
+                for code in expiry_codes:
+                    if code in per_expiry_defaults:
+                        st.session_state[f"run_width_{code}"] = int(per_expiry_defaults[code])
+                st.rerun()
         st.caption(
-            "Generates your run across every expiry. Two formats: "
-            "**% of spot** (101.9275% style) and **points** (121.52/121.78 style). "
-            "Tick **Override ES level** to reprice against a broker's marked ES."
+            "**% of spot** and **points** formats. Per-expiry sliders persist across refreshes."
         )
 
     if not snap:
@@ -554,12 +857,46 @@ def render_run(snap):
     spot_used = snap.spot + (es_used - snap.es_future)
 
     now_str = datetime.now(_NY).strftime("%H:%M:%S")
-    rows = []
-    pct_floats = []  # (code, bid_pct, ask_pct) for flash detection
     header_es = (
         f"ES {es_used:,.2f}"
         + (f" (LIVE {snap.es_future:,.2f})" if use_es_override else "")
     )
+
+    # ---- Per-expiry sliders + run output (side by side) -------------------
+    slider_col, run_col = st.columns([1, 3])
+
+    per_expiry_widths: dict[str, int] = {}
+    with slider_col:
+        st.markdown("**Per-expiry width**")
+
+        # Auto-apply per-expiry YAML defaults on first load AND whenever the
+        # YAML changes. Within a stable YAML version, user adjustments persist
+        # across the 5-second auto-refresh.
+        import hashlib
+        yaml_sig = hashlib.md5(
+            str(sorted(per_expiry_defaults.items())).encode()
+        ).hexdigest()
+        if st.session_state.get("_run_widths_yaml_sig") != yaml_sig:
+            for code in expiry_codes:
+                st.session_state[f"run_width_{code}"] = int(
+                    per_expiry_defaults.get(code, width_bps)
+                )
+            st.session_state["_run_widths_yaml_sig"] = yaml_sig
+
+        for code in expiry_codes:
+            key = f"run_width_{code}"
+            if key not in st.session_state:
+                st.session_state[key] = int(per_expiry_defaults.get(code, width_bps))
+            per_expiry_widths[code] = st.slider(
+                code,
+                min_value=5, max_value=100, step=1,
+                key=key,
+                format="%dbp",
+            )
+
+    # ---- Build all calculations using per-expiry widths -------------------
+    rows = []
+    pct_floats = []
     text_pct = [
         f"SPX Combo Run — {now_str} NY",
         f"{header_es}  SPX {spot_used:,.2f}  basis {snap.es_basis:+.2f}",
@@ -571,30 +908,30 @@ def render_run(snap):
         "",
     ]
 
-    half_spread = (width_bps / 2) / 10000  # half-width as fraction of forward
-
     for code in expiry_codes:
         try:
-            res = build_ladder(snap, code, float(width_bps), es_override=es_arg)
+            w = float(per_expiry_widths[code])
+            half_spread = (w / 2) / 10000
+
+            res = build_ladder(snap, code, w, es_override=es_arg)
             F, S, T, r, b, q, DF = res["F"], res["spot_eff"], res["T"], res["r"], res["b"], res["q"], res["DF"]
 
-            # % of spot format (against the effective spot — moves when ES override changes)
             FoverS = F / S
             FoS_bid = FoverS * (1 - half_spread)
             FoS_ask = FoverS * (1 + half_spread)
 
-            # Points format — pick strike per user's choice
             if strike_mode.startswith("ATM"):
                 K = round(F / 100) * 100
             else:
                 K = round(es_used / 25) * 25
 
             mid = m.combo_mid(F, K, r, T)
-            eps = m.edge_per_side(width_bps, F, r, T)
+            eps = m.edge_per_side(w, F, r, T)
             bid_pts, ask_pts = mid - eps, mid + eps
 
             rows.append({
                 "Expiry":   code,
+                "Width":    f"{int(w)}bp",
                 "F":        f"{F:,.2f}",
                 "F/S Bid":  f"{FoS_bid*100:.4f}%",
                 "F/S Mid":  f"{FoverS*100:.4f}%",
@@ -617,8 +954,6 @@ def render_run(snap):
             )
         except Exception as exc:
             rows.append({"Expiry": code, "F": f"ERR: {exc}"})
-
-    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
     # Flash detection: compare current pct values to previous render
     _prev = st.session_state.get("_run_prev_pct", {})
@@ -661,12 +996,19 @@ def render_run(snap):
 
     st.session_state["_run_prev_pct"] = _curr
 
-    cc1, cc2 = st.columns(2)
-    with cc1:
+    # Right side of the slider/run row: the styled % of spot block
+    with run_col:
         st.markdown("**% of spot**")
         st.markdown(pct_html, unsafe_allow_html=True)
-        with st.expander("📋 Copy text"):
-            st.code("\n".join(text_pct), language="text")
+
+    # Full-width: the run dataframe (now includes per-expiry width column)
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+    # Copy blocks below, side by side
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        st.markdown("**Copy — % of spot**")
+        st.code("\n".join(text_pct), language="text")
     with cc2:
         st.markdown("**Copy — points format**")
         st.code("\n".join(text_pts), language="text")
@@ -763,7 +1105,9 @@ def main():
 
     st.divider()
 
-    tab1, tab2, tab3, tab4 = st.tabs(["Run", "Ladder", "Revcon", "Reverse Borrow"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        ["Run", "Ladder", "Revcon", "Reverse Borrow", "Agent Deployment"]
+    )
 
     with tab1:
         if snap:
@@ -782,6 +1126,9 @@ def main():
     with tab4:
         if snap:
             render_reverse(snap)
+
+    with tab5:
+        render_agent_deployment(snap)
 
 
 if __name__ == "__main__":

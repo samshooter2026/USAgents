@@ -51,3 +51,15 @@ expiries:
   date: '2030-12-20'
 - code: DEC31
   date: '2031-12-19'
+axw_volumes:
+  sheet: BBG Data
+  range: C41:C48
+  year_labels:
+  - 26
+  - 27
+  - 28
+  - 29
+  - 30
+  - 31
+  - 32
+  - 33

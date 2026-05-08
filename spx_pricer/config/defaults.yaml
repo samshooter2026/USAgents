@@ -2,8 +2,19 @@
 
 # Bid/ask width in bps of forward
 width:
-  dealer_to_dealer: 10      # default for broker-to-broker
-  end_client: 15            # wider for buy-side
+  dealer_to_dealer: 25      # default for broker-to-broker
+  end_client: 30            # wider for buy-side
+
+# Per-expiry default width (bps).  Used to seed each per-expiry slider on first
+# render.  Once the user moves a slider, the chosen value persists across
+# refreshes via session_state.
+per_expiry_widths:
+  DEC26: 15
+  DEC27: 15
+  DEC28: 20
+  DEC29: 35
+  DEC30: 50
+  DEC31: 50
 
 # Revcon verdict threshold (annualised bps)
 verdict_threshold_bps: 1    # |bps_ann| < 1 → FLAT

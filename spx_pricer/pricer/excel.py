@@ -32,6 +32,7 @@ class MarketSnapshot:
     es_future: float
     es_basis: float
     expiries: dict[str, date]          # expiry_code -> settlement date
+    axw_volumes: dict[str, float]      # expiry_code -> today's cumulative volume (None if feed missing)
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +209,28 @@ def read_snapshot(config_path: str | Path) -> MarketSnapshot:
     for entry in cfg["expiries"]:
         expiries[str(entry["code"])] = date.fromisoformat(str(entry["date"]))
 
+    # AXW volumes (optional — empty dict if not configured yet)
+    axw_volumes: dict[str, float] = {}
+    av = cfg.get("axw_volumes")
+    if av:
+        try:
+            raw = _read_range_flat(sh(av["sheet"]), av["range"])
+            year_labels = av["year_labels"]
+            # Map AXW year (26-33) to pricing-expiry code (DEC26-DEC33).
+            # Only keep years that match a known pricing expiry.
+            for yr, val in zip(year_labels, raw):
+                code = f"DEC{yr}"
+                if code not in expiries:
+                    continue
+                if val is None or (isinstance(val, str) and val.startswith("#")):
+                    continue
+                try:
+                    axw_volumes[code] = float(val)
+                except (TypeError, ValueError):
+                    continue
+        except Exception as exc:
+            logger.warning("AXW volumes read failed: %s", exc)
+
     snap = MarketSnapshot(
         timestamp=datetime.now(),
         spot=spot,
@@ -217,6 +240,7 @@ def read_snapshot(config_path: str | Path) -> MarketSnapshot:
         es_future=es_future,
         es_basis=es_basis,
         expiries=expiries,
+        axw_volumes=axw_volumes,
     )
     logger.info(
         "Snapshot OK: spot=%.2f es=%.2f basis=%.2f sofr(1Y)=%.4f",
